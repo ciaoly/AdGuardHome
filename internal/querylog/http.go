@@ -334,27 +334,35 @@ func (l *queryLog) handlePutQueryLogConfig(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if syslogConf := newConf.Syslog; syslogConf != nil {
-		conf := syslogConf.toSyslogConfig()
-		conf.normalize()
+	err = validateSyslogConf(newConf.Syslog)
+	if err != nil {
+		aghhttp.ErrorAndLog(
+			ctx,
+			l.logger,
+			r,
+			w,
+			http.StatusUnprocessableEntity,
+			"syslog: %s",
+			err,
+		)
 
-		err = conf.validate()
-		if err != nil {
-			aghhttp.ErrorAndLog(
-				ctx,
-				l.logger,
-				r,
-				w,
-				http.StatusUnprocessableEntity,
-				"syslog: %s",
-				err,
-			)
-
-			return
-		}
+		return
 	}
 
 	l.applyQueryLogConfig(ctx, engine, ivl, newConf)
+}
+
+// validateSyslogConf normalizes and validates the syslog configuration from the
+// request, if it's present.  sc may be nil.
+func validateSyslogConf(sc *syslogConfigJSON) (err error) {
+	if sc == nil {
+		return nil
+	}
+
+	conf := sc.toSyslogConfig()
+	conf.normalize()
+
+	return conf.validate()
 }
 
 const (
