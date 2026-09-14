@@ -232,7 +232,13 @@ export const setLogsConfig = async (values: GetQueryLogConfigResponse): Promise<
     setState('processingSetConfig', true);
     try {
         await putQueryLogConfig(values);
-        setState({ ...values, processingSetConfig: false });
+        // The API model fields are optional, while the store expects a fully
+        // defined syslog config, so normalize it before merging.
+        setState({
+            ...values,
+            syslog: normalizeSyslogConfig(values.syslog),
+            processingSetConfig: false,
+        });
         return true;
     } catch (error) {
         addErrorToast({ error });
