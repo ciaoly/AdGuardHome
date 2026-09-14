@@ -114,7 +114,7 @@ func requireSyslogPayload(t *testing.T, msg string) {
 // requireSyslogTestPayload parses the JSON payload of msg and asserts that it
 // contains the fields of an entry created by [addTestEntry] with the given host
 // and client IP.
-func requireSyslogTestPayload(t *testing.T, msg string, host string, client net.IP) {
+func requireSyslogTestPayload(t *testing.T, msg, host string, client net.IP) {
 	t.Helper()
 
 	idx := strings.IndexByte(msg, '{')
