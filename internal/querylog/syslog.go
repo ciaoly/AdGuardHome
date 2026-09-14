@@ -355,7 +355,7 @@ func (s *syslogSender) run(ctx context.Context) {
 
 		_ = conn.SetWriteDeadline(time.Now().Add(syslogWriteTimeout))
 
-		_, err := conn.Write(fmtter.format(entry))
+		_, err := conn.Write(fmtter.message(entry))
 		if err != nil {
 			s.logger.WarnContext(ctx, "sending to syslog server", slogutil.KeyError, err)
 
@@ -521,8 +521,8 @@ func newSyslogFormatter(conf SyslogConfig, hostname string) (f *syslogFormatter)
 	}
 }
 
-// format returns the syslog message for entry.
-func (f *syslogFormatter) format(entry *logEntry) (msg []byte) {
+// message returns the syslog message for entry.
+func (f *syslogFormatter) message(entry *logEntry) (msg []byte) {
 	payload, err := json.Marshal(newSyslogPayload(entry))
 	if err != nil {
 		// Should not happen, since the payload consists of simple types only.

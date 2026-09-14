@@ -223,7 +223,7 @@ func TestSyslogFormatter(t *testing.T) {
 	t.Run("rfc5424", func(t *testing.T) {
 		conf.Format = SyslogFormatRFC5424
 
-		msg := string(newSyslogFormatter(conf, testSyslogHostname).format(entry))
+		msg := string(newSyslogFormatter(conf, testSyslogHostname).message(entry))
 
 		require.True(
 			t,
@@ -238,7 +238,7 @@ func TestSyslogFormatter(t *testing.T) {
 	t.Run("rfc3164", func(t *testing.T) {
 		conf.Format = SyslogFormatRFC3164
 
-		msg := string(newSyslogFormatter(conf, testSyslogHostname).format(entry))
+		msg := string(newSyslogFormatter(conf, testSyslogHostname).message(entry))
 
 		require.True(
 			t,
@@ -254,7 +254,7 @@ func TestSyslogFormatter(t *testing.T) {
 		conf.Format = SyslogFormatRFC5424
 
 		// An unresolvable hostname results in the NILVALUE placeholder.
-		msg := string(newSyslogFormatter(conf, syslogNilValue).format(entry))
+		msg := string(newSyslogFormatter(conf, syslogNilValue).message(entry))
 
 		require.True(t, strings.HasPrefix(msg, "<134>1 2026-09-10T12:34:56.789Z - "), "got %q", msg)
 	})
