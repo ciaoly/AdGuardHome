@@ -1,0 +1,407 @@
+# This workflow checks the code, builds Linux amd64/arm64 binaries as workflow
+# artifacts, and publishes a container image of this fork to the GitHub
+# Container Registry.
+#
+# It deliberately does not reuse the upstream workflows:
+#
+#   * build.yaml, mirror.yaml, and private.yaml only run for
+#     AdGuardSoftwareLimited, use self-hosted runners, internal actions, and
+#     private base images, and so cannot run in a fork;
+#
+#   * workflow.yaml does run in a fork, but it builds the legacy client
+#     directory instead of client_v2 and neither pushes nor saves the resulting
+#     image, which makes it a smoke test rather than a way to get an image.
+#
+# Keeping this workflow separate also means that upstream files are not
+# modified, which keeps future upstream merges simple.
+
+'env':
+  'CLIENT_DIR': 'client_v2'
+  'GO_VERSION': '1.26.8'
+  'NODE_VERSION': '24'
+'jobs':
+  'ApiClient':
+    'if': |
+      ${{ github.ref_type == 'branch' }}
+    'name': 'Regenerate API client'
+    'permissions':
+      'contents': 'write'
+    'runs-on': 'ubuntu-latest'
+    'steps':
+      - 'uses': 'actions/checkout@v6'
+      - 'uses': 'actions/setup-node@v7'
+        'with':
+          'node-version': '${{ env.NODE_VERSION }}'
+      - 'name': 'Install frontend dependencies'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          make \
+              CLIENT_DIR="${{ env.CLIENT_DIR }}" \
+              VERBOSE=1 \
+              js-deps \
+              ;
+      # The API client is generated from openapi/openapi.yaml with orval.  It
+      # cannot be regenerated on a machine without node_modules, so it is done
+      # here and committed back to the branch.
+      - 'name': 'Regenerate'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          npm \
+              --prefix="./${{ env.CLIENT_DIR }}" \
+              run api:generate \
+              ;
+      - 'name': 'Commit the regenerated client'
+        'env':
+          'API_DIR': '${{ env.CLIENT_DIR }}/src/api'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          # Use status rather than diff, so that newly generated files are
+          # detected as well.
+          if [ -z "$(git status --porcelain -- "$API_DIR")" ]; then
+            printf '%s\n' 'The API client is up to date.'
+            exit 0
+          fi
+
+          git add -A -- "$API_DIR"
+
+          git \
+              -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit \
+              -m 'chore: regenerate the API client [skip ci]' \
+              ;
+
+          git push
+  # Build produces Linux amd64 and arm64 release archives and uploads them as
+  # workflow artifacts.  It deliberately doesn't depend on Check so that lint or
+  # test failures don't block getting the binaries for manual deployment.
+  #
+  # The frontend is embedded into the binary via //go:embed, so it must be
+  # built before the Go builds.  CGO is disabled by the build scripts, so no
+  # cross-compilation toolchain is needed for arm64.
+  'Build':
+    'name': 'Build Linux binaries'
+    'permissions':
+      'contents': 'read'
+    'runs-on': 'ubuntu-latest'
+    'steps':
+      - 'uses': 'actions/checkout@v6'
+        'with':
+          # Set to false to avoid GITHUB_TOKEN leaking.
+          #
+          # See https://github.com/actions/checkout/issues/485#issuecomment-934422611.
+          'persist-credentials': false
+      - 'uses': 'actions/setup-go@v6'
+        'with':
+          'go-version': '${{ env.GO_VERSION }}'
+      - 'uses': 'actions/setup-node@v7'
+        'with':
+          'node-version': '${{ env.NODE_VERSION }}'
+      - 'name': 'Compute the version'
+        'env':
+          'REF_NAME': '${{ github.ref_name }}'
+          'REF_TYPE': '${{ github.ref_type }}'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          if [ "$REF_TYPE" = 'tag' ]; then
+            version="$REF_NAME"
+          else
+            version='v0.0.0-github'
+          fi
+
+          printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - 'name': 'Install frontend dependencies'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          make \
+              CLIENT_DIR="${{ env.CLIENT_DIR }}" \
+              VERBOSE=1 \
+              js-deps \
+              ;
+      - 'name': 'Regenerate the API client'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          npm \
+              --prefix="./${{ env.CLIENT_DIR }}" \
+              run api:generate \
+              ;
+      - 'name': 'Build the frontend'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          make \
+              CLIENT_DIR="${{ env.CLIENT_DIR }}" \
+              VERBOSE=1 \
+              js-build \
+              ;
+      - 'name': 'Build the binaries'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          make \
+              ARCH='amd64 arm64' \
+              CLIENT_DIR="${{ env.CLIENT_DIR }}" \
+              FRONTEND_PREBUILT=1 \
+              OS=linux \
+              SIGN=0 \
+              VERBOSE=1 \
+              VERSION="$VERSION" \
+              build-release \
+              ;
+      - 'uses': 'actions/upload-artifact@v4'
+        'with':
+          'name': 'adguardhome-linux'
+          'path': |
+            dist/AdGuardHome_linux_amd64.tar.gz
+            dist/AdGuardHome_linux_arm64.tar.gz
+            dist/AdGuardHome_frontend.tar.gz
+            dist/checksums.txt
+  'Check':
+    'name': 'Check'
+    'permissions':
+      'contents': 'read'
+    'runs-on': 'ubuntu-latest'
+    'steps':
+      - 'uses': 'actions/checkout@v6'
+        'with':
+          # Set to false to avoid GITHUB_TOKEN leaking.
+          #
+          # See https://github.com/actions/checkout/issues/485#issuecomment-934422611.
+          'persist-credentials': false
+      - 'uses': 'actions/setup-go@v6'
+        'with':
+          'go-version': '${{ env.GO_VERSION }}'
+      - 'name': 'Lint Go code'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          make \
+              VERBOSE=1 \
+              go-deps \
+              go-os-check \
+              go-lint \
+              ;
+      - 'uses': 'actions/setup-node@v7'
+        'with':
+          'node-version': '${{ env.NODE_VERSION }}'
+      - 'name': 'Install dependencies'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          make \
+              CLIENT_DIR="${{ env.CLIENT_DIR }}" \
+              VERBOSE=1 \
+              deps \
+              ;
+      - 'name': 'Regenerate the API client'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          npm \
+              --prefix="./${{ env.CLIENT_DIR }}" \
+              run api:generate \
+              ;
+      - 'name': 'Lint, typecheck, and test the frontend'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          npm \
+              --prefix="./${{ env.CLIENT_DIR }}" \
+              run check \
+              ;
+      - 'name': 'Test Go code'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          make \
+              CLIENT_DIR="${{ env.CLIENT_DIR }}" \
+              VERBOSE=1 \
+              go-test \
+              ;
+  'Image':
+    'name': 'Build and push image'
+    'needs': 'Check'
+    'permissions':
+      'contents': 'read'
+      'packages': 'write'
+    'runs-on': 'ubuntu-latest'
+    'steps':
+      - 'uses': 'actions/checkout@v6'
+        'with':
+          'persist-credentials': false
+      - 'uses': 'actions/setup-go@v6'
+        'with':
+          'go-version': '${{ env.GO_VERSION }}'
+      - 'uses': 'actions/setup-node@v7'
+        'with':
+          'node-version': '${{ env.NODE_VERSION }}'
+      - 'name': 'Set up Go modules cache'
+        'uses': 'actions/cache@v4'
+        'with':
+          'path': '~/go/pkg/mod'
+          'key': "${{ runner.os }}-go-${{ hashFiles('go.sum') }}"
+          'restore-keys': '${{ runner.os }}-go-'
+      - 'name': 'Compute the version and the image name'
+        'env':
+          'REF_NAME': '${{ github.ref_name }}'
+          'REF_TYPE': '${{ github.ref_type }}'
+          'REPOSITORY': '${{ github.repository }}'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          if [ "$REF_TYPE" = 'tag' ]; then
+            version="$REF_NAME"
+          else
+            version='v0.0.0-github'
+          fi
+
+          # GHCR requires the image name to be lowercase, while the repository
+          # name may contain uppercase letters.
+          image="ghcr.io/$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+
+          {
+            printf 'VERSION=%s\n' "$version"
+            printf 'IMAGE_NAME=%s\n' "$image"
+            printf 'BUILD_DATE=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          } >> "$GITHUB_ENV"
+      - 'name': 'Install frontend dependencies'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          make \
+              CLIENT_DIR="${{ env.CLIENT_DIR }}" \
+              VERBOSE=1 \
+              js-deps \
+              ;
+      - 'name': 'Regenerate the API client'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          npm \
+              --prefix="./${{ env.CLIENT_DIR }}" \
+              run api:generate \
+              ;
+      - 'name': 'Build the frontend'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          make \
+              CLIENT_DIR="${{ env.CLIENT_DIR }}" \
+              VERBOSE=1 \
+              js-build \
+              ;
+      # Only linux/amd64 is built.  The release script accepts the ARCH and OS
+      # limiters, so building just one platform keeps the run short.
+      #
+      # FRONTEND_PREBUILT=1 skips the frontend and dependency steps, which are
+      # already done above.
+      - 'name': 'Build the binaries'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          make \
+              ARCH=amd64 \
+              CLIENT_DIR="${{ env.CLIENT_DIR }}" \
+              FRONTEND_PREBUILT=1 \
+              OS=linux \
+              SIGN=0 \
+              VERBOSE=1 \
+              VERSION="$VERSION" \
+              build-release \
+              ;
+      # The docker image expects the binary to be named after the target
+      # platform, see docker/build.Dockerfile and scripts/make/build-docker.sh.
+      #
+      # Note that scripts/make/build-docker.sh is not used, because it copies
+      # the binaries for six platforms at once and fails when any of them is
+      # missing.
+      - 'name': 'Prepare the docker context'
+        'run': |
+          #!/bin/sh
+
+          set -e -f -u -x
+
+          mkdir -p dist/docker
+
+          cp \
+              dist/AdGuardHome_linux_amd64/AdGuardHome/AdGuardHome \
+              dist/docker/AdGuardHome_linux_amd64_ \
+              ;
+      - 'name': 'Set up QEMU'
+        'uses': 'docker/setup-qemu-action@v3'
+      - 'name': 'Set up Docker Buildx'
+        'uses': 'docker/setup-buildx-action@v3'
+      - 'name': 'Log in to the GitHub Container Registry'
+        'uses': 'docker/login-action@v3'
+        'with':
+          'registry': 'ghcr.io'
+          'username': '${{ github.actor }}'
+          'password': '${{ secrets.GITHUB_TOKEN }}'
+      - 'name': 'Build and push'
+        'uses': 'docker/build-push-action@v6'
+        'with':
+          'context': '.'
+          'file': 'docker/build.Dockerfile'
+          'platforms': 'linux/amd64'
+          'push': true
+          'tags': |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          'build-args': |
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            DIST_DIR=dist
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ env.VERSION }}
+'name': 'Check, build binaries and image'
+'on':
+  'push':
+    'tags':
+      - 'v*'
+  'workflow_dispatch':
+# Permissions are disabled for all the jobs by default, and then overridden for
+# specific jobs if needed.
+#
+# See https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions.
+'permissions': {}
