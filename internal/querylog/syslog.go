@@ -156,34 +156,60 @@ func (c *SyslogConfig) validate() (err error) {
 		return fmt.Errorf("invalid address: %w", err)
 	}
 
-	switch c.Network {
-	case SyslogNetworkUDP, SyslogNetworkTCP:
-		// Go on.
-	default:
-		return fmt.Errorf("invalid network: %q", c.Network)
+	err = validateSyslogNetwork(c.Network)
+	if err != nil {
+		return err
 	}
 
-	switch c.Format {
-	case SyslogFormatRFC5424, SyslogFormatRFC3164:
-		// Go on.
-	default:
-		return fmt.Errorf("invalid format: %q", c.Format)
+	err = validateSyslogFormat(c.Format)
+	if err != nil {
+		return err
 	}
 
 	if c.Facility < 0 || c.Facility > syslogFacilityMax {
 		return fmt.Errorf("invalid facility: %d", c.Facility)
 	}
 
-	if c.Hostname != "" {
-		err = netutil.ValidateHostname(c.Hostname)
-		if err != nil {
-			return fmt.Errorf("invalid hostname: %w", err)
-		}
-	}
-
-	err = validateSyslogTag(c.Tag)
+	err = validateSyslogHostname(c.Hostname)
 	if err != nil {
 		return err
+	}
+
+	return validateSyslogTag(c.Tag)
+}
+
+// validateSyslogNetwork returns an error if network is not a supported network
+// for connecting to the syslog server.
+func validateSyslogNetwork(network string) (err error) {
+	switch network {
+	case SyslogNetworkUDP, SyslogNetworkTCP:
+		return nil
+	default:
+		return fmt.Errorf("invalid network: %q", network)
+	}
+}
+
+// validateSyslogFormat returns an error if format is not a supported syslog
+// message format.
+func validateSyslogFormat(format string) (err error) {
+	switch format {
+	case SyslogFormatRFC5424, SyslogFormatRFC3164:
+		return nil
+	default:
+		return fmt.Errorf("invalid format: %q", format)
+	}
+}
+
+// validateSyslogHostname returns an error if hostname is not empty and is not
+// a valid hostname.
+func validateSyslogHostname(hostname string) (err error) {
+	if hostname == "" {
+		return nil
+	}
+
+	err = netutil.ValidateHostname(hostname)
+	if err != nil {
+		return fmt.Errorf("invalid hostname: %w", err)
 	}
 
 	return nil
@@ -242,6 +268,33 @@ type syslogSender struct {
 
 	// dropped is the number of entries dropped because the queue was full.
 	dropped *atomic.Uint64
+
+	// The fields above are safe for concurrent use, while the ones below are
+	// the mutable connection state that is only accessed from the
+	// [syslogSender.run] goroutine.
+
+	// conn is the current connection to the syslog server, nil if not
+	// connected.
+	conn net.Conn
+
+	// connKey identifies conn.
+	connKey syslogConnKey
+
+	// fmtter is the current formatter, nil if not initialized.
+	fmtter *syslogFormatter
+
+	// fmtterKey identifies fmtter.
+	fmtterKey syslogFormatterKey
+
+	// backoff is the current reconnect backoff delay.
+	backoff time.Duration
+
+	// nextAttempt is the earliest time at which dialing the server again is
+	// attempted.
+	nextAttempt time.Time
+
+	// lastDrops is the time of the last log message about dropped entries.
+	lastDrops time.Time
 }
 
 // newSyslogSender returns a new sender.  conf must not be nil.
@@ -281,132 +334,171 @@ func (s *syslogSender) run(ctx context.Context) {
 
 	defer slogutil.RecoverAndLog(ctx, s.logger)
 	defer close(s.stopped)
-
-	var (
-		conn        net.Conn
-		connKey     syslogConnKey
-		fmtter      *syslogFormatter
-		fmtterKey   syslogFormatterKey
-		backoff     time.Duration
-		nextAttempt time.Time
-		lastDrops   time.Time
-	)
-
-	defer func() {
-		if conn != nil {
-			closeErr := conn.Close()
-			if closeErr != nil {
-				s.logger.DebugContext(ctx, "closing syslog connection", slogutil.KeyError, closeErr)
-			}
-		}
-	}()
-
-	// send attempts to send entry.  It never returns an error: a failed send
-	// only drops the entry, since blocking the DNS request processing is not
-	// an option.
-	send := func(ctx context.Context, conf SyslogConfig, entry *logEntry) {
-		if !conf.Enabled {
-			return
-		}
-
-		fkey := newSyslogFormatterKey(conf)
-		if fmtter == nil || fkey != fmtterKey {
-			fmtter = newSyslogFormatter(conf, resolveSyslogHostname(conf.Hostname))
-			fmtterKey = fkey
-		}
-
-		key := syslogConnKey{network: conf.Network, address: conf.Address}
-		if conn != nil && key != connKey {
-			// The server address has changed, reconnect.
-			if closeErr := conn.Close(); closeErr != nil {
-				s.logger.DebugContext(ctx, "closing syslog connection", slogutil.KeyError, closeErr)
-			}
-
-			conn = nil
-			backoff = 0
-			nextAttempt = time.Time{}
-		}
-
-		if conn == nil {
-			if time.Now().Before(nextAttempt) {
-				// The server is still considered unreachable.
-				return
-			}
-
-			var err error
-			conn, err = net.DialTimeout(conf.Network, conf.Address, syslogDialTimeout)
-			if err != nil {
-				s.logger.WarnContext(
-					ctx,
-					"dialing syslog server",
-					"address", conf.Address,
-					slogutil.KeyError, err,
-				)
-
-				backoff = nextSyslogBackoff(backoff)
-				nextAttempt = time.Now().Add(backoff)
-
-				return
-			}
-
-			connKey = key
-			backoff = 0
-		}
-
-		_ = conn.SetWriteDeadline(time.Now().Add(syslogWriteTimeout))
-
-		_, err := conn.Write(fmtter.message(entry))
-		if err != nil {
-			s.logger.WarnContext(ctx, "sending to syslog server", slogutil.KeyError, err)
-
-			if closeErr := conn.Close(); closeErr != nil {
-				s.logger.DebugContext(ctx, "closing syslog connection", slogutil.KeyError, closeErr)
-			}
-
-			conn = nil
-			backoff = nextSyslogBackoff(backoff)
-			nextAttempt = time.Now().Add(backoff)
-
-			return
-		}
-
-		dropped := s.dropped.Swap(0)
-		if dropped > 0 && time.Since(lastDrops) >= syslogDropsLogIvl {
-			s.logger.WarnContext(ctx, "dropping syslog entries", "count", dropped)
-
-			lastDrops = time.Now()
-		}
-	}
+	defer s.closeConn(ctx)
 
 	for {
 		select {
 		case <-s.done:
 			drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), syslogDrainTimeout)
-			s.drain(drainCtx, send)
+			s.drain(drainCtx)
 			cancel()
 
 			return
 		case <-ctx.Done():
 			return
 		case entry := <-s.ch:
-			send(ctx, s.conf(), entry)
+			s.send(ctx, entry)
 		}
 	}
 }
 
 // drain sends the entries left in the queue until ctx is done.
-func (s *syslogSender) drain(
-	ctx context.Context,
-	send func(ctx context.Context, conf SyslogConfig, entry *logEntry),
-) {
+func (s *syslogSender) drain(ctx context.Context) {
 	for ctx.Err() == nil {
 		select {
 		case entry := <-s.ch:
-			send(ctx, s.conf(), entry)
+			s.send(ctx, entry)
 		default:
 			return
 		}
 	}
+}
+
+// send attempts to send entry to the configured syslog server.  It never
+// returns an error: a failed send only drops the entry, since blocking the DNS
+// request processing is not an option.  It must only be called from the
+// [syslogSender.run] goroutine.
+func (s *syslogSender) send(ctx context.Context, entry *logEntry) {
+	conf := s.conf()
+	if !conf.Enabled {
+		return
+	}
+
+	fmtter := s.formatterForConf(conf)
+
+	_, ok := s.connForConf(ctx, conf)
+	if !ok {
+		return
+	}
+
+	ok = s.writeEntry(ctx, fmtter, entry)
+	if !ok {
+		return
+	}
+
+	s.logDrops(ctx)
+}
+
+// formatterForConf returns the current formatter, recreating it if conf has
+// changed since the last call.
+func (s *syslogSender) formatterForConf(conf SyslogConfig) (fmtter *syslogFormatter) {
+	key := newSyslogFormatterKey(conf)
+	if s.fmtter == nil || key != s.fmtterKey {
+		s.fmtter = newSyslogFormatter(conf, resolveSyslogHostname(conf.Hostname))
+		s.fmtterKey = key
+	}
+
+	return s.fmtter
+}
+
+// connForConf returns the connection for conf.  It reconnects if the target
+// server has changed and dials if there is no connection and the reconnect
+// backoff has elapsed.  It returns false if there is no connection at the
+// moment.
+//
+// It must only be called from the [syslogSender.run] goroutine.
+func (s *syslogSender) connForConf(ctx context.Context, conf SyslogConfig) (conn net.Conn, ok bool) {
+	key := syslogConnKey{
+		network: conf.Network,
+		address: conf.Address,
+	}
+	if s.conn != nil && key != s.connKey {
+		// The server address has changed, reconnect.
+		s.closeConn(ctx)
+
+		s.backoff = 0
+		s.nextAttempt = time.Time{}
+	}
+
+	if s.conn != nil {
+		return s.conn, true
+	}
+
+	if time.Now().Before(s.nextAttempt) {
+		// The server is still considered unreachable.
+		return nil, false
+	}
+
+	dialed, err := net.DialTimeout(conf.Network, conf.Address, syslogDialTimeout)
+	if err != nil {
+		s.logger.WarnContext(
+			ctx,
+			"dialing syslog server",
+			"address", conf.Address,
+			slogutil.KeyError, err,
+		)
+
+		s.backoff = nextSyslogBackoff(s.backoff)
+		s.nextAttempt = time.Now().Add(s.backoff)
+
+		return nil, false
+	}
+
+	s.conn = dialed
+	s.connKey = key
+	s.backoff = 0
+
+	return dialed, true
+}
+
+// writeEntry sends the message for entry over the current connection.  It
+// resets the connection state and schedules a reconnect on failure.
+//
+// It must only be called from the [syslogSender.run] goroutine.
+func (s *syslogSender) writeEntry(ctx context.Context, fmtter *syslogFormatter, entry *logEntry) (ok bool) {
+	_ = s.conn.SetWriteDeadline(time.Now().Add(syslogWriteTimeout))
+
+	_, err := s.conn.Write(fmtter.message(entry))
+	if err != nil {
+		s.logger.WarnContext(ctx, "sending to syslog server", slogutil.KeyError, err)
+
+		s.closeConn(ctx)
+		s.backoff = nextSyslogBackoff(s.backoff)
+		s.nextAttempt = time.Now().Add(s.backoff)
+
+		return false
+	}
+
+	return true
+}
+
+// closeConn closes the current connection, if any, and forgets it.
+//
+// It must only be called from the [syslogSender.run] goroutine.
+func (s *syslogSender) closeConn(ctx context.Context) {
+	if s.conn == nil {
+		return
+	}
+
+	closeErr := s.conn.Close()
+	if closeErr != nil {
+		s.logger.DebugContext(ctx, "closing syslog connection", slogutil.KeyError, closeErr)
+	}
+
+	s.conn = nil
+}
+
+// logDrops logs the number of entries dropped since the last call if it is
+// nonzero and the log interval has elapsed.
+func (s *syslogSender) logDrops(ctx context.Context) {
+	dropped := s.dropped.Swap(0)
+	if dropped == 0 || time.Since(s.lastDrops) < syslogDropsLogIvl {
+		return
+	}
+
+	s.logger.WarnContext(ctx, "dropping syslog entries", "count", dropped)
+
+	s.lastDrops = time.Now()
 }
 
 // shutdown stops the sender and waits for it to finish.  It is safe to call it

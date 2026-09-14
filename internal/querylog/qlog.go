@@ -274,17 +274,26 @@ func (l *queryLog) Add(params *AddParams) {
 
 	l.buffer.Push(entry)
 
-	if !l.flushPending && fileIsEnabled && l.buffer.Len() >= memSize {
-		l.flushPending = true
+	l.maybeFlushAsync(ctx, fileIsEnabled, memSize)
+}
 
-		// TODO(s.chzhen):  Fix occasional rewrite of entires.
-		go func() {
-			flushErr := l.flushLogBuffer(ctx)
-			if flushErr != nil {
-				l.logger.ErrorContext(ctx, "flushing after adding", slogutil.KeyError, flushErr)
-			}
-		}()
+// maybeFlushAsync starts flushing the buffer in a separate goroutine if it has
+// grown past the memory size limit and no flush is pending.  It must be called
+// while holding the buffer lock.
+func (l *queryLog) maybeFlushAsync(ctx context.Context, fileIsEnabled bool, memSize uint) {
+	if l.flushPending || !fileIsEnabled || l.buffer.Len() < memSize {
+		return
 	}
+
+	l.flushPending = true
+
+	// TODO(s.chzhen):  Fix occasional rewrite of entires.
+	go func() {
+		flushErr := l.flushLogBuffer(ctx)
+		if flushErr != nil {
+			l.logger.ErrorContext(ctx, "flushing after adding", slogutil.KeyError, flushErr)
+		}
+	}()
 }
 
 // ShouldLog returns true if request for the host should be logged.
