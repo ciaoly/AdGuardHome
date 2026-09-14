@@ -36,7 +36,17 @@ type QueryLog interface {
 // Config is the query log configuration structure.
 //
 // Do not alter any fields of this structure after using it.
+//
+// Note: field order is optimized for the GC (go vet fieldalignment), do not
+// reorder without running the linter.
 type Config struct {
+	// ConfigModifier is used to update the global configuration.  It must not
+	// be nil.
+	ConfigModifier agh.ConfigModifier
+
+	// HTTPRegister registers an HTTP handler.
+	HTTPReg aghhttp.Registrar
+
 	// Logger is used for logging the operation of the query log.  It must not
 	// be nil.
 	Logger *slog.Logger
@@ -48,18 +58,16 @@ type Config struct {
 	// Anonymizer processes the IP addresses to anonymize those if needed.
 	Anonymizer *aghnet.IPMut
 
-	// ConfigModifier is used to update the global configuration.  It must not
-	// be nil.
-	ConfigModifier agh.ConfigModifier
-
-	// HTTPRegister registers an HTTP handler.
-	HTTPReg aghhttp.Registrar
-
 	// FindClient returns client information by their IDs.
 	FindClient func(ids []string) (c *Client, err error)
 
 	// BaseDir is the base directory for log files.
 	BaseDir string
+
+	// Syslog is the configuration for forwarding query log entries to a
+	// remote syslog server.  It is independent of Enabled and FileEnabled, so
+	// that the entries can be forwarded without being stored locally.
+	Syslog SyslogConfig
 
 	// RotationIvl is the interval for log rotation.  After that period, the old
 	// log file will be renamed, NOT deleted, so the actual log retention time
@@ -79,11 +87,6 @@ type Config struct {
 	// AnonymizeClientIP tells if the query log should anonymize clients' IP
 	// addresses.
 	AnonymizeClientIP bool
-
-	// Syslog is the configuration for forwarding query log entries to a
-	// remote syslog server.  It is independent of Enabled and FileEnabled, so
-	// that the entries can be forwarded without being stored locally.
-	Syslog SyslogConfig
 }
 
 // AddParams is the parameters for adding an entry.

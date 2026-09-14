@@ -39,7 +39,16 @@ type configJSON struct {
 }
 
 // getConfigResp is the JSON structure for the querylog configuration.
+//
+// Note: field order is optimized for the GC (go vet fieldalignment), do not
+// reorder without running the linter.
 type getConfigResp struct {
+	// Syslog is the configuration for forwarding query log entries to a
+	// remote syslog server.  It is a pointer to be able to tell when it's not
+	// set: a nil value on update means that the current configuration must be
+	// kept.
+	Syslog *syslogConfigJSON `json:"syslog,omitempty"`
+
 	// Ignored is the list of host names, which should not be written to log.
 	Ignored []string `json:"ignored"`
 
@@ -58,12 +67,6 @@ type getConfigResp struct {
 	//
 	// TODO(a.garipov): Consider using separate setting for statistics.
 	AnonymizeClientIP aghalg.NullBool `json:"anonymize_client_ip"`
-
-	// Syslog is the configuration for forwarding query log entries to a
-	// remote syslog server.  It is a pointer to be able to tell when it's not
-	// set: a nil value on update means that the current configuration must be
-	// kept.
-	Syslog *syslogConfigJSON `json:"syslog,omitempty"`
 }
 
 // syslogConfigJSON is the JSON structure for the syslog forwarding

@@ -241,7 +241,23 @@ func validateSyslogTag(tag string) (err error) {
 //
 // All network operations are performed in a separate goroutine, so that
 // sending never blocks the DNS request processing.  See [queryLog.Add].
+//
+// Note: field order is optimized for the GC (go vet fieldalignment), do not
+// reorder without running the linter.  The fields above conn are safe for
+// concurrent use, while the ones below are the mutable connection state that
+// is only accessed from the [syslogSender.run] goroutine.
 type syslogSender struct {
+	// nextAttempt is the earliest time at which dialing the server again is
+	// attempted.
+	nextAttempt time.Time
+
+	// lastDrops is the time of the last log message about dropped entries.
+	lastDrops time.Time
+
+	// conn is the current connection to the syslog server, nil if not
+	// connected.
+	conn net.Conn
+
 	// logger is used for logging the operation of the sender.  It must not be
 	// nil.
 	logger *slog.Logger
@@ -269,32 +285,17 @@ type syslogSender struct {
 	// dropped is the number of entries dropped because the queue was full.
 	dropped *atomic.Uint64
 
-	// The fields above are safe for concurrent use, while the ones below are
-	// the mutable connection state that is only accessed from the
-	// [syslogSender.run] goroutine.
-
-	// conn is the current connection to the syslog server, nil if not
-	// connected.
-	conn net.Conn
+	// fmtter is the current formatter, nil if not initialized.
+	fmtter *syslogFormatter
 
 	// connKey identifies conn.
 	connKey syslogConnKey
-
-	// fmtter is the current formatter, nil if not initialized.
-	fmtter *syslogFormatter
 
 	// fmtterKey identifies fmtter.
 	fmtterKey syslogFormatterKey
 
 	// backoff is the current reconnect backoff delay.
 	backoff time.Duration
-
-	// nextAttempt is the earliest time at which dialing the server again is
-	// attempted.
-	nextAttempt time.Time
-
-	// lastDrops is the time of the last log message about dropped entries.
-	lastDrops time.Time
 }
 
 // newSyslogSender returns a new sender.  conf must not be nil.
