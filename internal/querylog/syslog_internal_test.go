@@ -111,6 +111,31 @@ func requireSyslogPayload(t *testing.T, msg string) {
 	assert.Equal(t, int64(1), p.Rules[0].FilterListID)
 }
 
+// requireSyslogTestPayload parses the JSON payload of msg and asserts that it
+// contains the fields of an entry created by [addTestEntry] with the given host
+// and client IP.
+func requireSyslogTestPayload(t *testing.T, msg string, host string, client net.IP) {
+	t.Helper()
+
+	idx := strings.IndexByte(msg, '{')
+	require.NotEqual(t, -1, idx, "no JSON payload in %q", msg)
+
+	var p syslogPayload
+	require.NoError(t, json.Unmarshal([]byte(msg[idx:]), &p))
+
+	assert.Equal(t, host, p.QHost)
+	assert.Equal(t, "A", p.QType)
+	assert.Equal(t, "IN", p.QClass)
+	assert.Equal(t, client.String(), p.ClientIP)
+	assert.Equal(t, "FilteredBlackList", p.Reason)
+	assert.True(t, p.IsFiltered)
+	assert.Equal(t, int64(0), p.ElapsedMS)
+
+	require.Len(t, p.Rules, 1)
+	assert.Equal(t, "SomeRule", p.Rules[0].Text)
+	assert.Equal(t, int64(1), p.Rules[0].FilterListID)
+}
+
 func TestSyslogConfig_normalize(t *testing.T) {
 	conf := &SyslogConfig{}
 	conf.normalize()
@@ -321,7 +346,7 @@ func TestSyslogSender_udp(t *testing.T) {
 	require.True(t, strings.HasPrefix(msg, "<134>1 "), "got %q", msg)
 	assert.Contains(t, msg, testSyslogHostname+" "+DefaultSyslogTag)
 
-	requireSyslogPayload(t, msg)
+	requireSyslogTestPayload(t, msg, "ads.example.org", testClientIPv4)
 }
 
 func TestSyslogSender_tcp(t *testing.T) {
@@ -360,7 +385,7 @@ func TestSyslogSender_tcp(t *testing.T) {
 	require.True(t, strings.HasPrefix(msg, "<134>1 "), "got %q", msg)
 	assert.Contains(t, msg, testSyslogHostname+" "+DefaultSyslogTag)
 
-	requireSyslogPayload(t, msg)
+	requireSyslogTestPayload(t, msg, "ads.example.org", testClientIPv4)
 }
 
 // waitForConn waits for a connection from connCh or an error from errCh.
