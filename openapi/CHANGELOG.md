@@ -2,6 +2,16 @@
 
 <!-- TODO(a.garipov): Reformat in accordance with the KeepAChangelog spec. -->
 
+## v0.107.80: API changes
+
+### New `syslog` field in `GetQueryLogConfigResponse` and `PutQueryLogConfigUpdateRequest`
+
+- New object property `syslog` configures forwarding of query log entries to a remote syslog server.  The forwarding is independent of the local query log storage, so the entries can be sent to a SIEM without being written to disk.
+
+- New `SyslogConfig` schema describes the property.  It contains the `enabled`, `network`, `address`, `format`, `tag`, `hostname`, and `facility` properties.
+
+- Omitting the `syslog` property from `PUT /control/querylog/config/update` leaves the current syslog configuration unchanged.
+
 ## v0.107.79: API changes
 
 - Field `bootstrap_dns` in `POST /control/dns_config` now accepts comments.  A comment must start with the `#` symbol.

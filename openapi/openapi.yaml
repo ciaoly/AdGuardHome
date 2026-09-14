@@ -2477,6 +2477,54 @@
           'description': >
             If true, the host names in the `ignored` array are excluded from the
             query log.
+        'syslog':
+          '$ref': '#/components/schemas/SyslogConfig'
+    'SyslogConfig':
+      'type': 'object'
+      'description': >
+        Configuration for forwarding query log entries to a remote syslog
+        server.  The forwarding is independent of the local query log storage,
+        so it is possible to forward the entries without writing them to disk.
+      'required':
+      - 'enabled'
+      'properties':
+        'enabled':
+          'type': 'boolean'
+          'description': >
+            If true, the query log entries are forwarded to the syslog server.
+        'network':
+          'type': 'string'
+          'description': 'Transport protocol used to reach the syslog server'
+          'enum':
+          - 'udp'
+          - 'tcp'
+        'address':
+          'type': 'string'
+          'description': 'Host and port of the syslog server, for example "192.0.2.1:514"'
+          'example': '192.0.2.1:514'
+        'format':
+          'type': 'string'
+          'description': >
+            Format of the syslog message.  RFC 5424 is the modern standard and
+            should be preferred, RFC 3164 is provided for legacy collectors.
+          'enum':
+          - 'rfc5424'
+          - 'rfc3164'
+        'tag':
+          'type': 'string'
+          'description': 'APP-NAME field of the syslog message'
+          'example': 'AdGuardHome'
+        'hostname':
+          'type': 'string'
+          'description': >
+            HOSTNAME field of the syslog message.  If empty, the host name of
+            the machine is used.
+        'facility':
+          'type': 'integer'
+          'description': 'Syslog facility, from 0 to 23'
+          'minimum': 0
+          'maximum': 23
+          'example': 16
     'PutQueryLogConfigUpdateRequest':
       '$ref': '#/components/schemas/GetQueryLogConfigResponse'
     'ResultRule':

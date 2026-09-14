@@ -9,6 +9,15 @@ const MOCK_QUERY_LOG_CONFIG = {
     ignored: [],
     ignore_enabled: false,
     interval: 24,
+    syslog: {
+        enabled: false,
+        network: 'udp',
+        address: '',
+        format: 'rfc5424',
+        tag: 'AdGuardHome',
+        hostname: '',
+        facility: 16,
+    },
 };
 
 type QueryLogApiEntry = {

@@ -21,6 +21,7 @@ import { addSuccessToast } from 'panel/stores/toasts';
 import { SettingRow } from 'panel/common/ui/SettingRow';
 import { StatsConfig } from './StatsConfig';
 import { LogsConfig } from './LogsConfig';
+import { SyslogConfig } from './SyslogConfig';
 import { FiltersConfig } from './FiltersConfig';
 import { SafeSearchModal } from './SafeSearchModal';
 import { IgnoredDomainsModal } from './IgnoredDomainsModal';
@@ -42,6 +43,7 @@ export const Settings = () => {
     });
 
     const [logsModalOpen, setLogsModalOpen] = createSignal(false);
+    const [syslogModalOpen, setSyslogModalOpen] = createSignal(false);
     const [statsModalOpen, setStatsModalOpen] = createSignal(false);
     const [safesearchProvidersOpen, setSafesearchProvidersOpen] = createSignal(false);
     const [showClearLogsConfirm, setShowClearLogsConfirm] = createSignal(false);
@@ -76,6 +78,13 @@ export const Settings = () => {
         const ignored = statsState.ignored;
         if (!ignored || ignored.length === 0) return '';
         return ignored.join(', ');
+    });
+
+    const syslogSummary = createMemo(() => {
+        const { enabled, network, address } = queryLogsState.syslog;
+        if (!enabled || !address) return intl.getMessage('settings_syslog_not_configured');
+
+        return `${network.toUpperCase()} ${address}`;
     });
 
     // Handler functions
@@ -289,6 +298,24 @@ export const Settings = () => {
                                     onClick={() => setLogsIgnoredModalOpen(true)}
                                 />
 
+                                <SettingRow
+                                    variant="switch-link"
+                                    id="querylog_syslog"
+                                    title={intl.getMessage('settings_syslog_title')}
+                                    description={intl.getMessage('settings_syslog_desc')}
+                                    checked={queryLogsState.syslog.enabled}
+                                    value={syslogSummary()}
+                                    divider
+                                    onChange={(v) =>
+                                        setLogsConfig(
+                                            buildQueryLogConfig(queryLogsState, {
+                                                syslog: { ...queryLogsState.syslog, enabled: v },
+                                            }),
+                                        )
+                                    }
+                                    onClick={() => setSyslogModalOpen(true)}
+                                />
+
                                 <div class={s.actionRow}>
                                     <Button
                                         variant="secondary-danger"
@@ -307,6 +334,13 @@ export const Settings = () => {
                                 processing={queryLogsState.processingSetConfig}
                                 modalOpen={logsModalOpen()}
                                 onModalClose={() => setLogsModalOpen(false)}
+                            />
+
+                            <SyslogConfig
+                                config={queryLogsState.syslog}
+                                processing={queryLogsState.processingSetConfig}
+                                modalOpen={syslogModalOpen()}
+                                onModalClose={() => setSyslogModalOpen(false)}
                             />
 
                             <IgnoredDomainsModal

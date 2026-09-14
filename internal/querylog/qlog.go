@@ -36,6 +36,10 @@ type queryLog struct {
 
 	findClient func(ids []string) (c *Client, err error)
 
+	// syslog forwards the entries to a remote syslog server.  It must not be
+	// nil.
+	syslog *syslogSender
+
 	// buffer contains recent log entries.  The entries in this buffer must not
 	// be modified.
 	buffer *container.RingBuffer[*logEntry]
@@ -92,12 +96,18 @@ func (l *queryLog) Start(ctx context.Context) (err error) {
 	}
 
 	go l.periodicRotate(ctx)
+	go l.syslog.run(ctx)
 
 	return nil
 }
 
 // Shutdown implements the [QueryLog] interface for *queryLog.
 func (l *queryLog) Shutdown(ctx context.Context) (err error) {
+	// Stop the syslog sender before taking the lock.  The sender acquires
+	// confMu to read its configuration, so waiting for it while holding the
+	// lock would deadlock.
+	l.syslog.shutdown()
+
 	l.confMu.RLock()
 	defer l.confMu.RUnlock()
 
@@ -217,7 +227,7 @@ func newLogEntry(ctx context.Context, logger *slog.Logger, params *AddParams) (e
 
 // Add implements the [QueryLog] interface for *queryLog.
 func (l *queryLog) Add(params *AddParams) {
-	var isEnabled, fileIsEnabled bool
+	var isEnabled, fileIsEnabled, syslogEnabled bool
 	var memSize uint
 	func() {
 		l.confMu.RLock()
@@ -225,9 +235,10 @@ func (l *queryLog) Add(params *AddParams) {
 
 		isEnabled, fileIsEnabled = l.conf.Enabled, l.conf.FileEnabled
 		memSize = l.conf.MemSize
+		syslogEnabled = l.conf.Syslog.Enabled
 	}()
 
-	if !isEnabled {
+	if !isEnabled && !syslogEnabled {
 		return
 	}
 
@@ -246,6 +257,17 @@ func (l *queryLog) Add(params *AddParams) {
 	}
 
 	entry := newLogEntry(ctx, l.logger, params)
+
+	// Enqueue the entry for the syslog forwarding before acquiring bufferLock,
+	// so that an ongoing flush cannot delay it.  The enqueue itself does not
+	// block, see [syslogSender.enqueue].
+	if syslogEnabled {
+		l.syslog.enqueue(entry)
+	}
+
+	if !isEnabled {
+		return
+	}
 
 	l.bufferLock.Lock()
 	defer l.bufferLock.Unlock()

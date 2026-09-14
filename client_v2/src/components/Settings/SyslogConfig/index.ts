@@ -1,0 +1,1 @@
+export { SyslogConfig } from './SyslogConfig';

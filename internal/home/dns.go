@@ -89,6 +89,15 @@ func initDNS(
 		MemSize:           config.QueryLog.MemSize,
 		Enabled:           config.QueryLog.Enabled,
 		FileEnabled:       config.QueryLog.FileEnabled,
+		Syslog: querylog.SyslogConfig{
+			Enabled:  config.QueryLog.Syslog.Enabled,
+			Network:  config.QueryLog.Syslog.Network,
+			Address:  config.QueryLog.Syslog.Address,
+			Format:   config.QueryLog.Syslog.Format,
+			Tag:      config.QueryLog.Syslog.Tag,
+			Hostname: config.QueryLog.Syslog.Hostname,
+			Facility: config.QueryLog.Syslog.Facility,
+		},
 	}
 
 	engine, err = aghnet.NewIgnoreEngine(config.QueryLog.Ignored, config.QueryLog.IgnoredEnabled)

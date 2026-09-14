@@ -58,6 +58,66 @@ type getConfigResp struct {
 	//
 	// TODO(a.garipov): Consider using separate setting for statistics.
 	AnonymizeClientIP aghalg.NullBool `json:"anonymize_client_ip"`
+
+	// Syslog is the configuration for forwarding query log entries to a
+	// remote syslog server.  It is a pointer to be able to tell when it's not
+	// set: a nil value on update means that the current configuration must be
+	// kept.
+	Syslog *syslogConfigJSON `json:"syslog,omitempty"`
+}
+
+// syslogConfigJSON is the JSON structure for the syslog forwarding
+// configuration.
+type syslogConfigJSON struct {
+	// Network is the network to use, either [SyslogNetworkUDP] or
+	// [SyslogNetworkTCP].
+	Network string `json:"network"`
+
+	// Address is the host:port of the syslog server.
+	Address string `json:"address"`
+
+	// Format is the message format, either [SyslogFormatRFC5424] or
+	// [SyslogFormatRFC3164].
+	Format string `json:"format"`
+
+	// Tag is the APP-NAME field of the message.
+	Tag string `json:"tag"`
+
+	// Hostname is the HOSTNAME field of the message.  If empty, the OS
+	// hostname is used.
+	Hostname string `json:"hostname"`
+
+	// Facility is the syslog facility, from 0 to 23.
+	Facility int `json:"facility"`
+
+	// Enabled shows if the forwarding to the syslog server is enabled.
+	Enabled bool `json:"enabled"`
+}
+
+// toSyslogConfig converts c to a [SyslogConfig].  c must not be nil.
+func (c *syslogConfigJSON) toSyslogConfig() (conf SyslogConfig) {
+	return SyslogConfig{
+		Enabled:  c.Enabled,
+		Network:  c.Network,
+		Address:  c.Address,
+		Format:   c.Format,
+		Tag:      c.Tag,
+		Hostname: c.Hostname,
+		Facility: c.Facility,
+	}
+}
+
+// newSyslogConfigJSON converts conf to a [syslogConfigJSON].
+func newSyslogConfigJSON(conf SyslogConfig) (c *syslogConfigJSON) {
+	return &syslogConfigJSON{
+		Enabled:  conf.Enabled,
+		Network:  conf.Network,
+		Address:  conf.Address,
+		Format:   conf.Format,
+		Tag:      conf.Tag,
+		Hostname: conf.Hostname,
+		Facility: conf.Facility,
+	}
 }
 
 // Register web handlers
@@ -143,6 +203,7 @@ func (l *queryLog) handleGetQueryLogConfig(w http.ResponseWriter, r *http.Reques
 			AnonymizeClientIP: aghalg.BoolToNullBool(l.conf.AnonymizeClientIP),
 			Ignored:           l.conf.Ignored.Values(),
 			IgnoredEnabled:    aghalg.BoolToNullBool(l.conf.Ignored.IsEnabled()),
+			Syslog:            newSyslogConfigJSON(l.conf.Syslog),
 		}
 	}()
 
@@ -273,6 +334,26 @@ func (l *queryLog) handlePutQueryLogConfig(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if syslogConf := newConf.Syslog; syslogConf != nil {
+		conf := syslogConf.toSyslogConfig()
+		conf.normalize()
+
+		err = conf.validate()
+		if err != nil {
+			aghhttp.ErrorAndLog(
+				ctx,
+				l.logger,
+				r,
+				w,
+				http.StatusUnprocessableEntity,
+				"syslog: %s",
+				err,
+			)
+
+			return
+		}
+	}
+
 	l.applyQueryLogConfig(ctx, engine, ivl, newConf)
 }
 
@@ -326,6 +407,11 @@ func (l *queryLog) applyQueryLogConfig(
 	conf.RotationIvl = ivl
 	conf.Enabled = newConf.Enabled == aghalg.NBTrue
 	conf.AnonymizeClientIP = newConf.AnonymizeClientIP == aghalg.NBTrue
+
+	if newConf.Syslog != nil {
+		conf.Syslog = newConf.Syslog.toSyslogConfig()
+		conf.Syslog.normalize()
+	}
 
 	if conf.AnonymizeClientIP {
 		l.anonymizer.Store(AnonymizeIP)

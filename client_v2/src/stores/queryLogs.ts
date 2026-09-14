@@ -14,6 +14,11 @@ import {
 } from 'panel/helpers/constants';
 import { normalizeLogs, type NormalizedQueryLogItem } from 'panel/helpers/helpers';
 import type { GetQueryLogConfigResponse } from 'panel/api/model/getQueryLogConfigResponse';
+import {
+    DEFAULT_SYSLOG_CONFIG,
+    normalizeSyslogConfig,
+    type SyslogConfig,
+} from 'panel/components/Settings/helpers';
 
 type QueryLogsState = {
     processingGetLogs: boolean;
@@ -33,6 +38,7 @@ type QueryLogsState = {
     customInterval: number | null;
     ignored: string[];
     ignored_enabled: boolean;
+    syslog: SyslogConfig;
 };
 
 const initialState: QueryLogsState = {
@@ -53,6 +59,7 @@ const initialState: QueryLogsState = {
     customInterval: null,
     ignored: [],
     ignored_enabled: false,
+    syslog: DEFAULT_SYSLOG_CONFIG,
 };
 
 const [state, setState] = createStore<QueryLogsState>(initialState);
@@ -212,6 +219,7 @@ export const getLogsConfig = async () => {
                 : null,
             ignored: data.ignored || [],
             ignored_enabled: data.ignored_enabled ?? false,
+            syslog: normalizeSyslogConfig(data.syslog),
             processingGetConfig: false,
         });
     } catch (error) {

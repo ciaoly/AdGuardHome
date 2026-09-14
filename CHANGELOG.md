@@ -18,6 +18,10 @@ See also the [v0.107.80 GitHub milestone][ms-v0.107.80].
 NOTE: Add new changes BELOW THIS COMMENT.
 -->
 
+### Added
+
+- Forwarding of query log entries to a remote syslog server over UDP or TCP in either RFC 5424 or RFC 3164 format.  The forwarding has its own switch, so the entries can be sent to a SIEM without being stored locally.  Configure it in *Settings → Query log*.
+
 ### Security
 
 - Go version has been updated to prevent the possibility of exploiting the Go vulnerabilities fixed in [1.26.8][go-1.26.8].

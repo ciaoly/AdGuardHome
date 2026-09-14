@@ -79,6 +79,11 @@ type Config struct {
 	// AnonymizeClientIP tells if the query log should anonymize clients' IP
 	// addresses.
 	AnonymizeClientIP bool
+
+	// Syslog is the configuration for forwarding query log entries to a
+	// remote syslog server.  It is independent of Enabled and FileEnabled, so
+	// that the entries can be forwarded without being stored locally.
+	Syslog SyslogConfig
 }
 
 // AddParams is the parameters for adding an entry.
@@ -155,6 +160,12 @@ func newQueryLog(conf Config) (l *queryLog, err error) {
 		memSize = 1
 	}
 
+	conf.Syslog.normalize()
+	err = conf.Syslog.validate()
+	if err != nil {
+		return nil, fmt.Errorf("syslog: %w", err)
+	}
+
 	l = &queryLog{
 		logger:     conf.Logger,
 		findClient: findClient,
@@ -168,6 +179,8 @@ func newQueryLog(conf Config) (l *queryLog, err error) {
 		anonymizer: conf.Anonymizer,
 	}
 
+	l.syslog = newSyslogSender(conf.Logger, l.syslogConf)
+
 	*l.conf = conf
 
 	err = validateIvl(conf.RotationIvl)
@@ -176,4 +189,13 @@ func newQueryLog(conf Config) (l *queryLog, err error) {
 	}
 
 	return l, nil
+}
+
+// syslogConf returns a copy of the current syslog configuration.  It is safe
+// for concurrent use.
+func (l *queryLog) syslogConf() (c SyslogConfig) {
+	l.confMu.RLock()
+	defer l.confMu.RUnlock()
+
+	return l.conf.Syslog
 }

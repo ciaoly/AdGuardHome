@@ -361,6 +361,37 @@ type queryLogConfig struct {
 
 	// FileEnabled defines, if the query log is written to the file.
 	FileEnabled bool `yaml:"file_enabled"`
+
+	// Syslog is the configuration for forwarding query log entries to a
+	// remote syslog server.
+	Syslog syslogConfig `yaml:"syslog"`
+}
+
+// syslogConfig is the configuration for forwarding query log entries to a
+// remote syslog server.
+type syslogConfig struct {
+	// Network is the network to use, either "udp" or "tcp".
+	Network string `yaml:"network"`
+
+	// Address is the host:port of the syslog server.
+	Address string `yaml:"address"`
+
+	// Format is the message format, either "rfc5424" or "rfc3164".
+	Format string `yaml:"format"`
+
+	// Tag is the APP-NAME field of the message.
+	Tag string `yaml:"tag"`
+
+	// Hostname is the HOSTNAME field of the message.  If empty, the OS
+	// hostname is used.
+	Hostname string `yaml:"hostname"`
+
+	// Facility is the syslog facility, from 0 to 23.
+	Facility int `yaml:"facility"`
+
+	// Enabled defines if the query log is forwarded to the syslog server.  It
+	// is independent of Enabled and FileEnabled.
+	Enabled bool `yaml:"enabled"`
 }
 
 type statsConfig struct {
@@ -466,6 +497,15 @@ var config = &configuration{
 		MemSize:        1000,
 		Ignored:        []string{},
 		IgnoredEnabled: false,
+		Syslog: syslogConfig{
+			Enabled:  false,
+			Network:  querylog.SyslogNetworkUDP,
+			Address:  "",
+			Format:   querylog.SyslogFormatRFC5424,
+			Tag:      querylog.DefaultSyslogTag,
+			Hostname: "",
+			Facility: querylog.DefaultSyslogFacility,
+		},
 	},
 	Stats: statsConfig{
 		Enabled:        true,
@@ -835,6 +875,15 @@ func (c *configuration) write(
 		config.QueryLog.MemSize = dc.MemSize
 		config.QueryLog.Ignored = dc.Ignored.Values()
 		config.QueryLog.IgnoredEnabled = dc.Ignored.IsEnabled()
+		config.QueryLog.Syslog = syslogConfig{
+			Enabled:  dc.Syslog.Enabled,
+			Network:  dc.Syslog.Network,
+			Address:  dc.Syslog.Address,
+			Format:   dc.Syslog.Format,
+			Tag:      dc.Syslog.Tag,
+			Hostname: dc.Syslog.Hostname,
+			Facility: dc.Syslog.Facility,
+		}
 	}
 
 	if globalContext.filters != nil {
