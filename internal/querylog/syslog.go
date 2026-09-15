@@ -60,6 +60,11 @@ const (
 	// maxSyslogRules is the maximum number of filtering rules included into a
 	// single message.  It keeps messages small enough to not be fragmented by
 	// the network.
+	//
+	// TODO(supersu): The rule count is capped, but the total message size is
+	// not, so long rule texts or host names can still produce UDP datagrams
+	// above the path MTU, which are often dropped as fragmented.  Consider an
+	// overall size limit.
 	maxSyslogRules = 10
 
 	// syslogDialTimeout is the timeout for establishing a connection.
@@ -121,6 +126,10 @@ type SyslogConfig struct {
 
 // normalize replaces the empty fields of c with their default values.  It must
 // be called before [SyslogConfig.validate].
+//
+// TODO(supersu): Facility 0 (kern) is indistinguishable from "unset" here and
+// is silently replaced with local0.  Consider a pointer field or a sentinel so
+// that kern can be selected explicitly.
 func (c *SyslogConfig) normalize() {
 	if c.Network == "" {
 		c.Network = SyslogNetworkUDP
@@ -318,6 +327,11 @@ func newSyslogSender(
 // enqueue adds entry to the sending queue.  It never blocks: if the queue is
 // full, the entry is dropped and the drop counter is incremented.  It is safe
 // for concurrent use.
+//
+// Note: the entry pointer is shared with the log buffer and the HTTP handlers,
+// so it must be treated as immutable once enqueued.  Any in-place mutation of
+// an entry after [queryLog.Add] (for example, another read-time anonymization
+// pass) would race with the run goroutine.
 func (s *syslogSender) enqueue(entry *logEntry) {
 	select {
 	case s.ch <- entry:
@@ -330,6 +344,11 @@ func (s *syslogSender) enqueue(entry *logEntry) {
 // run sends the queued entries to the syslog server until ctx is canceled or
 // [syslogSender.shutdown] is called.  It is intended to be used as a
 // goroutine.
+//
+// TODO(supersu): The per-entry net.DialTimeout and the write deadline do not
+// observe drainCtx, so a single dial or write (each up to 5 seconds) can make
+// drain overrun syslogDrainTimeout and shutdown log a spurious timeout.
+// Switch to DialContext with the draining context and a tightened deadline.
 func (s *syslogSender) run(ctx context.Context) {
 	s.started.Store(true)
 
@@ -370,6 +389,9 @@ func (s *syslogSender) drain(ctx context.Context) {
 // request processing is not an option.  It must only be called from the
 // [syslogSender.run] goroutine.
 func (s *syslogSender) send(ctx context.Context, entry *logEntry) {
+	// TODO(supersu): Copying the config (five strings plus the RWMutex read
+	// lock) on every entry costs measurable contention at high QPS.  Cache it
+	// here and invalidate on configuration changes instead.
 	conf := s.conf()
 	if !conf.Enabled {
 		return
@@ -457,9 +479,20 @@ func (s *syslogSender) connForConf(ctx context.Context, conf SyslogConfig) (conn
 //
 // It must only be called from the [syslogSender.run] goroutine.
 func (s *syslogSender) writeEntry(ctx context.Context, fmtter *syslogFormatter, entry *logEntry) (ok bool) {
+	// Don't check the error here: a failed SetWriteDeadline means that the
+	// connection is already broken, which the following Write surfaces.
 	_ = s.conn.SetWriteDeadline(time.Now().Add(syslogWriteTimeout))
 
-	_, err := s.conn.Write(fmtter.message(entry))
+	msg := fmtter.message(entry)
+	if s.connKey.network == SyslogNetworkTCP {
+		// TCP is a byte stream, so messages must be delimited.  Use the
+		// non-transparent framing (trailing LF) from RFC 6587, section 3.4.1,
+		// which is widely supported by collectors.  UDP datagrams are
+		// self-delimiting and must not get the extra byte.
+		msg = append(msg, '\n')
+	}
+
+	_, err := s.conn.Write(msg)
 	if err != nil {
 		s.logger.WarnContext(ctx, "sending to syslog server", slogutil.KeyError, err)
 
@@ -491,6 +524,11 @@ func (s *syslogSender) closeConn(ctx context.Context) {
 
 // logDrops logs the number of entries dropped since the last call if it is
 // nonzero and the log interval has elapsed.
+//
+// TODO(supersu): The counter is swapped out before the interval check, so drops
+// observed within the throttle window are reset without being logged, and
+// nothing is reported until the next successful write.  Read the counter
+// first and only clear it when actually logging.
 func (s *syslogSender) logDrops(ctx context.Context) {
 	dropped := s.dropped.Swap(0)
 	if dropped == 0 || time.Since(s.lastDrops) < syslogDropsLogIvl {
@@ -675,6 +713,9 @@ func (f *syslogFormatter) appendRFC3164(dst []byte, ts time.Time, payload []byte
 }
 
 // syslogRule is a filtering rule as it appears in a syslog message.
+//
+// TODO(supersu): omitempty hides the legitimate zero values that user-defined
+// rules carry (FilterListID 0, empty Text).  Consider always emitting them.
 type syslogRule struct {
 	// Text is the text of the rule.
 	Text string `json:"text,omitempty"`

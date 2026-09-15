@@ -344,6 +344,8 @@ func TestSyslogSender_udp(t *testing.T) {
 
 	msg := string(buf[:n])
 	require.True(t, strings.HasPrefix(msg, "<134>1 "), "got %q", msg)
+	// UDP datagrams are self-delimiting, so no framing byte must be added.
+	assert.False(t, strings.HasSuffix(msg, "\n"), "got %q", msg)
 	assert.Contains(t, msg, testSyslogHostname+" "+DefaultSyslogTag)
 
 	requireSyslogTestPayload(t, msg, "ads.example.org", testClientIPv4)
@@ -383,6 +385,9 @@ func TestSyslogSender_tcp(t *testing.T) {
 
 	msg := string(buf[:n])
 	require.True(t, strings.HasPrefix(msg, "<134>1 "), "got %q", msg)
+	// TCP uses the non-transparent framing of RFC 5425/6587, i.e. messages are
+	// terminated with an LF.
+	assert.True(t, strings.HasSuffix(msg, "\n"), "got %q", msg)
 	assert.Contains(t, msg, testSyslogHostname+" "+DefaultSyslogTag)
 
 	requireSyslogTestPayload(t, msg, "ads.example.org", testClientIPv4)
